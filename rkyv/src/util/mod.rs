@@ -11,7 +11,7 @@
 //! accessing and deserializing data.
 
 #[cfg(feature = "alloc")]
-mod aligned_vec;
+mod alloc;
 mod inline_vec;
 mod ser_vec;
 
@@ -25,11 +25,9 @@ use rancor::Strategy;
 
 #[doc(inline)]
 #[cfg(feature = "alloc")]
-pub use self::aligned_vec::*;
+pub use self::alloc::*;
 #[doc(inline)]
 pub use self::{inline_vec::InlineVec, ser_vec::SerVec};
-#[cfg(feature = "alloc")]
-use crate::{de::pooling::Unify, ser::AllocSerializer};
 use crate::{ser::Writer, Archive, Deserialize, Portable, Serialize};
 
 #[cfg(debug_assertions)]
@@ -147,94 +145,26 @@ pub unsafe fn access_unchecked_mut<T: Portable>(
     unsafe { access_pos_unchecked_mut::<T>(bytes, pos) }
 }
 
-/// A buffer of bytes aligned to 16 bytes.
-///
-/// # Examples
-///
-/// ```
-/// # use rkyv::util::AlignedBytes;
-/// use core::mem;
-///
-/// assert_eq!(mem::align_of::<u8>(), 1);
-/// assert_eq!(mem::align_of::<AlignedBytes<256>>(), 16);
-/// ```
-#[derive(Archive, Clone, Copy, Debug, Deserialize, Portable, Serialize)]
-#[archive(crate)]
+/// A wrapper which aligns its inner value to 16 bytes.
+#[derive(Clone, Copy, Debug)]
 #[repr(C, align(16))]
-pub struct AlignedBytes<const N: usize>(pub [u8; N]);
+pub struct Align<T>(
+    /// The inner value.
+    pub T,
+);
 
-impl<const N: usize> Default for AlignedBytes<N> {
-    fn default() -> Self {
-        Self([0; N])
-    }
-}
+impl<T> Deref for Align<T> {
+    type Target = T;
 
-impl<const N: usize> Deref for AlignedBytes<N> {
-    type Target = [u8; N];
-
-    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<const N: usize> DerefMut for AlignedBytes<N> {
-    #[inline]
+impl<T> DerefMut for Align<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
-}
-
-impl<const N: usize> AsRef<[u8]> for AlignedBytes<N> {
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl<const N: usize> AsMut<[u8]> for AlignedBytes<N> {
-    #[inline]
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.0.as_mut()
-    }
-}
-
-/// Serializes the given value and returns the resulting bytes.
-///
-/// The const generic parameter `N` specifies the number of bytes to
-/// pre-allocate as scratch space. Choosing a good default value for your data
-/// can be difficult without any data, so consider using an
-/// [`AllocationTracker`](crate::ser::allocator::AllocationTracker) to determine
-/// how much scratch space is typically used.
-///
-/// This function is only available with the `alloc` feature because it uses a
-/// general-purpose serializer. In no-alloc and high-performance environments,
-/// the serializer should be customized for the specific situation.
-///
-/// # Examples
-/// ```
-/// use rkyv::rancor::Error;
-///
-/// let value = vec![1, 2, 3, 4];
-///
-/// let bytes =
-///     rkyv::to_bytes::<Error>(&value).expect("failed to serialize vec");
-/// // SAFETY:
-/// // - The byte slice represents an archived object
-/// // - The root of the object is stored at the end of the slice
-/// let deserialized = unsafe {
-///     rkyv::from_bytes_unchecked::<Vec<i32>, Error>(&bytes)
-///         .expect("failed to deserialize vec")
-/// };
-///
-/// assert_eq!(deserialized, value);
-/// ```
-#[cfg(feature = "alloc")]
-#[inline]
-pub fn to_bytes<E>(
-    value: &impl Serialize<Strategy<AllocSerializer, E>>,
-) -> Result<AlignedVec, E> {
-    Ok(serialize_into(value, Default::default())?.into_writer())
 }
 
 /// Serializes the given value into the given serializer and then returns the
@@ -262,49 +192,6 @@ where
 {
     value.serialize_and_resolve(Strategy::wrap(serializer))?;
     Ok(())
-}
-
-/// Deserializes a value from the given bytes.
-///
-/// This function is only available with the `alloc` feature because it uses a
-/// general-purpose deserializer. In no-alloc and high-performance environments,
-/// the deserializer should be customized for the specific situation.
-///
-/// # Safety
-///
-/// - The byte slice must represent an archived object.
-/// - The root of the object must be stored at the end of the slice (this is the
-///   default behavior).
-///
-/// # Examples
-/// ```
-/// use rkyv::rancor::Error;
-///
-/// let value = vec![1, 2, 3, 4];
-///
-/// let bytes =
-///     rkyv::to_bytes::<Error>(&value).expect("failed to serialize vec");
-/// // SAFETY:
-/// // - The byte slice represents an archived object
-/// // - The root of the object is stored at the end of the slice
-/// let deserialized = unsafe {
-///     rkyv::from_bytes_unchecked::<Vec<i32>, Error>(&bytes)
-///         .expect("failed to deserialize vec")
-/// };
-///
-/// assert_eq!(deserialized, value);
-/// ```
-#[cfg(feature = "alloc")]
-#[inline]
-pub unsafe fn from_bytes_unchecked<T, E>(bytes: &[u8]) -> Result<T, E>
-where
-    T: Archive,
-    T::Archived: Deserialize<T, Strategy<Unify, E>>,
-{
-    // SAFETY: The caller has guaranteed that a valid `T` is located at the root
-    // position in the byte slice.
-    let archived = unsafe { access_unchecked::<T::Archived>(bytes) };
-    deserialize(archived, &mut Unify::default())
 }
 
 /// Deserailizes a value from the given archived value using the provided
